@@ -1472,7 +1472,7 @@ CACHE = {
 COLLECTED_TOKENS = {}
 GROUP_INDEX = 0  # مؤشر المجموعة الحالية
 
-CACHE_DURATION = 120  # ثانية
+CACHE_DURATION = 28800  # ثانية
 CONCURRENT_LIMIT = 40  # عدد الاتصالات المتزامنة
 
 async def fetch_token(session, uid, password):
