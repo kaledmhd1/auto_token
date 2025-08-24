@@ -1462,7 +1462,7 @@ group_accounts = [
     # أضف باقي المجموعات...
 ]
 
-JWT_API_TEMPLATE = "https://jwtbngx.vercel.app/api/oauth_guest?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "https://jwt-sigma-teal.vercel.app/api/oauth_guest?uid={uid}&password={password}"
 
 CACHE = {
     "tokens": {},   # dict {uid: token}
