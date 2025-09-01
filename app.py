@@ -3732,7 +3732,7 @@ COLLECTED_TOKENS = {}
 GROUP_INDEX = 0  # مؤشر المجموعة الحالية
 
 CACHE_DURATION = 28800  # ثانية
-CONCURRENT_LIMIT = 40  # عدد الاتصالات المتزامنة
+CONCURRENT_LIMIT = 200  # عدد الاتصالات المتزامنة
 
 async def fetch_token(session, uid, password):
     url = JWT_API_TEMPLATE.format(uid=uid, password=password)
