@@ -3814,7 +3814,7 @@ COLLECTED_TOKENS = {}
 GROUP_INDEX = 0  # مؤشر المجموعة الحالية
 
 CACHE_DURATION = 10000  # ثانية
-CONCURRENT_LIMIT = 1000  # عدد الاتصالات المتزامنة
+CONCURRENT_LIMIT = 250  # عدد الاتصالات المتزامنة
 
 async def fetch_token(session, uid, password):
     url = JWT_API_TEMPLATE.format(uid=uid, password=password)
@@ -3865,28 +3865,41 @@ def get_jwt_tokens():
             "tokens": CACHE["tokens"]
         })
 
-    async def process_group():
-        current_group = group_accounts[GROUP_INDEX]
-        tokens = await fetch_tokens_for_group(current_group)
-        return tokens
+    async def process_groups():
+        global GROUP_INDEX
+        groups_to_fetch = []
 
-    new_tokens = asyncio.run(process_group())
+        # جلب الجروب الحالي
+        groups_to_fetch.append(group_accounts[GROUP_INDEX])
+
+        # جلب الجروب اللي بعده
+        next_index = (GROUP_INDEX + 1) % len(group_accounts)
+        if next_index != GROUP_INDEX:
+            groups_to_fetch.append(group_accounts[next_index])
+
+        all_tokens = {}
+        for group in groups_to_fetch:
+            tokens = await fetch_tokens_for_group(group)
+            all_tokens.update(tokens)
+
+        # تحديث المؤشر (+2 كل مرة)
+        GROUP_INDEX = (GROUP_INDEX + 2) % len(group_accounts)
+
+        return all_tokens
+
+    new_tokens = asyncio.run(process_groups())
     COLLECTED_TOKENS.update(new_tokens)
 
-    if GROUP_INDEX == len(group_accounts) - 1:
+    if GROUP_INDEX == 0:  # يعني خلصنا دورة كاملة
         CACHE["tokens"] = COLLECTED_TOKENS.copy()
         CACHE["timestamp"] = time.time()
         COLLECTED_TOKENS.clear()
-        GROUP_INDEX = 0
-    else:
-        GROUP_INDEX += 1
 
     return jsonify({
         "count": len(COLLECTED_TOKENS) if not CACHE["tokens"] else len(CACHE["tokens"]),
         "last_update_vn": get_last_update_vn() if CACHE["tokens"] else None,
         "tokens": CACHE["tokens"] if CACHE["tokens"] else COLLECTED_TOKENS
     })
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
