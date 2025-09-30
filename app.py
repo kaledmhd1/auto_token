@@ -9238,7 +9238,7 @@ group_accounts = [
   }
 ]
 
-JWT_API_TEMPLATE = "https://jwt-lac.vercel.app/api/oauth_guest?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "https://jwt-neon.vercel.app/api/oauth_guest?uid={uid}&password={password}"
 
 CACHE = {
     "tokens": {},   # dict {uid: token}
