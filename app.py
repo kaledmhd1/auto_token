@@ -22238,7 +22238,7 @@ group_accounts = [
         "4197570633": "BNGX_Vip_is_here_XPY4PU4B7"
     }
 ]
-JWT_API_TEMPLATE = "https://jwt-one-alpha.vercel.app/api/oauth_guest?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "https://jwt-kyh6.onrender.com/api/oauth_guest?uid={uid}&password={password}"
 
 CACHE = {
     "tokens": {},   # dict {uid: token}
