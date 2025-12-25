@@ -22238,7 +22238,7 @@ group_accounts = [
         "4197570633": "BNGX_Vip_is_here_XPY4PU4B7"
     }
 ]
-JWT_API_TEMPLATE = "https://jwt-ten-kappa.vercel.app/get?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "http://node.hostron.online:65470/get_token?uid={uid}&password={password}"
 
 CACHE = {
     "tokens": {},   # dict {uid: token}
