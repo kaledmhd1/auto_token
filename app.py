@@ -34,9 +34,9 @@ group_accounts = [
         "4197305954": "BNGX_Vip_is_here_VUHSTKD7V",
         "4197306023": "BNGX_Vip_is_here_5FOQEV3NV",
         "4197305990": "BNGX_Vip_is_here_SVS7QRE4M",
-        "4197306126": "BNGX_Vip_is_here_4CRW3B4EN"
-    },
-    {
+        "4197306126": "BNGX_Vip_is_here_4CRW3B4EN",
+    
+    
         "4197305955": "BNGX_Vip_is_here_JMBCZTXYJ",
         "4197305979": "BNGX_Vip_is_here_DHYUKJBVV",
         "4197306068": "BNGX_Vip_is_here_5KHEZW8OB",
@@ -80,9 +80,9 @@ group_accounts = [
         "4197305957": "BNGX_Vip_is_here_1QBHP0H9Q",
         "4197306092": "BNGX_Vip_is_here_FSYK5SIGJ",
         "4197306128": "BNGX_Vip_is_here_GZ93AWMTC",
-        "4197306020": "BNGX_Vip_is_here_RNGQRZL75"
-        },
-        {
+        "4197306020": "BNGX_Vip_is_here_RNGQRZL75",
+        
+        
         "4197306096": "BNGX_Vip_is_here_PR8ZGJTQB",
         "4197306166": "BNGX_Vip_is_here_QV8IMW2VW",
         "4197306197": "BNGX_Vip_is_here_0CCL53T6K",
@@ -172,9 +172,9 @@ group_accounts = [
         "4197306611": "BNGX_Vip_is_here_DVKW9RKFO",
         "4197306602": "BNGX_Vip_is_here_5JCH3T99T",
         "4197306508": "BNGX_Vip_is_here_QAWJIV5HF",
-        "4197306490": "BNGX_Vip_is_here_JQN9IBMDY"
-        },
-        {
+        "4197306490": "BNGX_Vip_is_here_JQN9IBMDY",
+        
+        
         "4197306579": "BNGX_Vip_is_here_LPE3C3CB5",
         "4197306351": "BNGX_Vip_is_here_LXQY7E5UI",
         "4197306559": "BNGX_Vip_is_here_X11KCMYNK",
@@ -242,9 +242,9 @@ group_accounts = [
         "4197306843": "BNGX_Vip_is_here_DXCMKOT4Z",
         "4197306923": "BNGX_Vip_is_here_YRFETO2HT",
         "4197307009": "BNGX_Vip_is_here_CJ058FOWS",
-        "4197306710": "BNGX_Vip_is_here_A2J6TWS5T"
-    },
-    {
+        "4197306710": "BNGX_Vip_is_here_A2J6TWS5T",
+    
+    
         "4197306954": "BNGX_Vip_is_here_5IFMRZ8D3",
         "4197306975": "BNGX_Vip_is_here_ED2ZO4JR9",
         "4197306997": "BNGX_Vip_is_here_ZG7D4XY3B",
@@ -346,9 +346,9 @@ group_accounts = [
         "4197307555": "BNGX_Vip_is_here_9CU3TW4IL",
         "4197307553": "BNGX_Vip_is_here_STXYSCR6A",
         "4197307603": "BNGX_Vip_is_here_JM1YJQLCL",
-        "4197307619": "BNGX_Vip_is_here_QPIHR2SB4"
-    },
-    {
+        "4197307619": "BNGX_Vip_is_here_QPIHR2SB4",
+    
+    
         "4197307700": "BNGX_Vip_is_here_Q1LSDM7VG",
         "4197307621": "BNGX_Vip_is_here_T3XGVM5O2",
         "4197307717": "BNGX_Vip_is_here_RGZ8BL9JD",
