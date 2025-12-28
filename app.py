@@ -737,7 +737,7 @@ group_accounts = [
         "4197309669": "BNGX_Vip_is_here_3KENT97ON",
         "4197309772": "BNGX_Vip_is_here_EXY995UN4",
         "4197309806": "BNGX_Vip_is_here_4ZPG1JKRN",
-        "4197309771": "BNGX_Vip_is_here_MCRF6DYM0",
+        "4197309771": "BNGX_Vip_is_here_MCRF6DYM0"
             }
 ]
 JWT_API_TEMPLATE = "https://jwt-liard-eight.vercel.app/get?uid={uid}&password={password}"
