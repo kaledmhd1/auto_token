@@ -42,7 +42,7 @@ group_accounts = [
   "5673568391": "E3C729412F72F573145CCB778FB2AACA0E801181146CF2132096AD2A26DE6D80",
   "5673568393": "85817FD21DFDAA5D19182E4C17FEA0471709FDC5FB4BE0BF6967354F51CA6EB4"          }
 ]
-JWT_API_TEMPLATE = "https://jwt-tmk.vercel.app/GeneRate-Jwt?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "http://78.154.103.18:11844/get?uid={uid}&pw={password}"
 
 CACHE = {
     "tokens": {},   # dict {uid: token}
