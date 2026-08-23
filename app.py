@@ -93,7 +93,7 @@ group_accounts = [
   "6820365537": "H4RDIXx-WZLQGH-S_3_0_3"
 }
 ]
-JWT_API_TEMPLATE = "http://78.154.103.18:11844/get?uid={uid}&pw={password}"
+JWT_API_TEMPLATE = "https://jwt-tmk.vercel.app/GeneRate-Jwt?uid={uid}&password={password}"
 
 CACHE = {
     "tokens": {},   # dict {uid: token}
@@ -111,10 +111,10 @@ async def fetch_token(session, uid, password):
     try:
         async with session.get(url) as resp:
             if resp.status == 200:
-                data = await resp.json()
-                token = data.get("token")
-                if token:
-                    return uid, token
+                token = await resp.text()
+                # الـ API الجديد يرجع التوكن مباشرة كنص
+                if token and len(token) > 10:  # تأكد أن التوكن ليس فارغاً
+                    return uid, token.strip()
             return uid, None
     except Exception as e:
         print(f"Error fetching token for uid {uid}: {e}")
@@ -190,6 +190,7 @@ def get_jwt_tokens():
         "last_update_vn": get_last_update_vn() if CACHE["tokens"] else None,
         "tokens": CACHE["tokens"] if CACHE["tokens"] else COLLECTED_TOKENS
     })
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
