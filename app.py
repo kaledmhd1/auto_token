@@ -1,6 +1,7 @@
 from flask import Flask, jsonify
 import asyncio
 import aiohttp
+import json
 import time
 from datetime import datetime, timezone, timedelta
 import os
@@ -9,7 +10,7 @@ app = Flask(__name__)
 
 
 group_accounts = [
-{
+  {
     "8003192873": "BNGX_LVL~LQ63Q7",
     "8003192911": "BNGX_LVL~CQRXG1",
     "8003192821": "BNGX_LVL~APCCRK",
@@ -373,57 +374,99 @@ group_accounts = [
 
 
 ]
-JWT_API_TEMPLATE = "http://78.154.103.18:11844/login?uid={uid}&password={password}"
+
+# ✅ الرابط الجديد
+JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={password}"
 
 CACHE = {
-    "tokens": {},   # dict {uid: token}
+    "tokens": {},
     "timestamp": 0
 }
 
 COLLECTED_TOKENS = {}
-GROUP_INDEX = 0  # مؤشر المجموعة الحالية
+GROUP_INDEX = 0
 
-CACHE_DURATION = 10000  # ثانية
-CONCURRENT_LIMIT = 50  # عدد الاتصالات المتزامنة
+CACHE_DURATION = 10000
+CONCURRENT_LIMIT = 20   # خفّضناها لأن الـ API الجديد قد يكون أبطأ
+
 
 async def fetch_token(session, uid, password):
+    """
+    يقرأ JSON من الـ API الجديد ويستخرج:
+      - token
+      - account_id (مفيد للفرز)
+      - region
+    """
     url = JWT_API_TEMPLATE.format(uid=uid, password=password)
     try:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                token = await resp.text()
-                # الـ API الجديد يرجع التوكن مباشرة كنص
-                if token and len(token) > 10:  # تأكد أن التوكن ليس فارغاً
-                    return uid, token.strip()
-            return uid, None
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+            if resp.status != 200:
+                return uid, None, None, None
+
+            text = await resp.text()
+            if not text:
+                return uid, None, None, None
+
+            # ─── محاولة JSON أولاً ───
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict):
+                    if data.get("ok") and data.get("token"):
+                        return (
+                            uid,
+                            data["token"],
+                            str(data.get("account_id", "")),
+                            data.get("region", ""),
+                        )
+                    return uid, None, None, None
+            except json.JSONDecodeError:
+                pass
+
+            # ─── fallback: نص مباشر ───
+            token = text.strip()
+            if len(token) > 20:
+                return uid, token, None, None
+            return uid, None, None, None
+
+    except asyncio.TimeoutError:
+        print(f"[timeout] uid {uid}")
+        return uid, None, None, None
     except Exception as e:
-        print(f"Error fetching token for uid {uid}: {e}")
-        return uid, None
+        print(f"[error] uid {uid}: {e}")
+        return uid, None, None, None
+
 
 async def fetch_token_with_semaphore(semaphore, session, uid, password):
     async with semaphore:
         return await fetch_token(session, uid, password)
 
+
 async def fetch_tokens_for_group(group):
     tokens = {}
     semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
     async with aiohttp.ClientSession() as session:
-        tasks = [fetch_token_with_semaphore(semaphore, session, uid, password)
-                 for uid, password in group.items()]
+        tasks = [
+            fetch_token_with_semaphore(semaphore, session, uid, password)
+            for uid, password in group.items()
+        ]
         results = await asyncio.gather(*tasks)
-        for uid, token in results:
+        for uid, token, acc_id, region in results:
             if token:
                 tokens[uid] = token
     return tokens
 
+
 def is_cache_valid():
     return (time.time() - CACHE["timestamp"]) < CACHE_DURATION and len(CACHE["tokens"]) > 0
+
 
 def get_last_update_vn():
     utc_time = datetime.fromtimestamp(CACHE["timestamp"], tz=timezone.utc)
     vn_time = utc_time + timedelta(hours=7)
     return vn_time.strftime("%Y-%m-%d %H:%M:%S")
 
+
+# ==================== ENDPOINTS ====================
 @app.route("/api/get_jwt", methods=["GET"])
 def get_jwt_tokens():
     global GROUP_INDEX, COLLECTED_TOKENS
@@ -439,10 +482,8 @@ def get_jwt_tokens():
         global GROUP_INDEX
         groups_to_fetch = []
 
-        # جلب الجروب الحالي
         groups_to_fetch.append(group_accounts[GROUP_INDEX])
 
-        # جلب الجروب اللي بعده
         next_index = (GROUP_INDEX + 1) % len(group_accounts)
         if next_index != GROUP_INDEX:
             groups_to_fetch.append(group_accounts[next_index])
@@ -452,7 +493,6 @@ def get_jwt_tokens():
             tokens = await fetch_tokens_for_group(group)
             all_tokens.update(tokens)
 
-        # تحديث المؤشر (+2 كل مرة)
         GROUP_INDEX = (GROUP_INDEX + 2) % len(group_accounts)
 
         return all_tokens
@@ -460,7 +500,7 @@ def get_jwt_tokens():
     new_tokens = asyncio.run(process_groups())
     COLLECTED_TOKENS.update(new_tokens)
 
-    if GROUP_INDEX == 0:  # يعني خلصنا دورة كاملة
+    if GROUP_INDEX == 0:
         CACHE["tokens"] = COLLECTED_TOKENS.copy()
         CACHE["timestamp"] = time.time()
         COLLECTED_TOKENS.clear()
@@ -471,6 +511,60 @@ def get_jwt_tokens():
         "tokens": CACHE["tokens"] if CACHE["tokens"] else COLLECTED_TOKENS
     })
 
+
+# ─── اختبار اتصال مباشر بـ API واحد ───
+@app.route("/api/test_one", methods=["GET"])
+def test_one():
+    """
+    Usage: /api/test_one?uid=8003192873&password=BNGX_LVL~LQ63Q7
+    """
+    uid = request.args.get("uid", "").strip()
+    password = request.args.get("password", "").strip()
+    if not uid or not password:
+        return jsonify({"ok": False, "error": "provide uid & password"}), 400
+
+    async def run():
+        async with aiohttp.ClientSession() as session:
+            return await fetch_token(session, uid, password)
+
+    u, token, acc_id, region = asyncio.run(run())
+    return jsonify({
+        "ok": bool(token),
+        "uid": u,
+        "account_id": acc_id,
+        "region": region,
+        "token_preview": (token[:80] + "...") if token else None,
+        "token_length": len(token) if token else 0,
+    })
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True, "status": "alive"})
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "service": "JWT Group Fetcher",
+        "upstream_api": JWT_API_TEMPLATE,
+        "endpoints": {
+            "GET /api/get_jwt": "Returns tokens batch by batch",
+            "GET /api/test_one?uid=&password=": "Test one account",
+            "GET /health": "Health check"
+        }
+    })
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", "10000"))
+    print("=" * 60)
+    print("   JWT Group Fetcher")
+    print("=" * 60)
+    print(f"[i] Listening    : http://0.0.0.0:{port}")
+    print(f"[i] Upstream API : {JWT_API_TEMPLATE}")
+    print(f"[i] Endpoint     : http://localhost:{port}/api/get_jwt")
+    print(f"[i] Test one     : http://localhost:{port}/api/test_one?uid=8003192873&password=BNGX_LVL~LQ63Q7")
+    print(f"[i] Health       : http://localhost:{port}/health")
+    print("=" * 60)
+    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
