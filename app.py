@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import asyncio
 import aiohttp
 import json
@@ -9,8 +9,10 @@ import os
 app = Flask(__name__)
 
 
-group_accounts = [
-      {
+# ============================================================
+#  الحسابات — الصق قائمتك هنا
+# ============================================================
+group_accounts = [{
     "8003192873": "BNGX_LVL~LQ63Q7",
     "8003192911": "BNGX_LVL~CQRXG1",
     "8003192821": "BNGX_LVL~APCCRK",
@@ -373,12 +375,17 @@ group_accounts = [
 }
 
 
-
-
 ]
 
-# ✅ الرابط الجديد
 JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={password}"
+
+# ============================================================
+#  الإعدادات
+# ============================================================
+TIMEOUT_PER_REQUEST = 10.0   # ← 10 ثوان لكل حساب
+REQUEST_DELAY = 0.0          # ← تأخير بين كل طلب (اختياري)
+CACHE_DURATION = 10000       # ← مدة الكاش بالثواني
+
 
 CACHE = {
     "tokens": {},
@@ -387,77 +394,112 @@ CACHE = {
 
 COLLECTED_TOKENS = {}
 GROUP_INDEX = 0
-
-CACHE_DURATION = 10000
-CONCURRENT_LIMIT = 20   # خفّضناها لأن الـ API الجديد قد يكون أبطأ
+IS_FETCHING = False          # ← حماية من الطلبات المتزامنة
 
 
-async def fetch_token(session, uid, password):
+# ============================================================
+#  جلب توكن حساب واحد — timeout 10s
+# ============================================================
+async def fetch_one_token(session, uid, password):
     """
-    يقرأ JSON من الـ API الجديد ويستخرج:
-      - token
-      - account_id (مفيد للفرز)
-      - region
+    جلب توكن واحد فقط مع timeout 10 ثوان.
+    يرجع: (uid, token, account_id, region, error)
     """
     url = JWT_API_TEMPLATE.format(uid=uid, password=password)
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT_PER_REQUEST)
+    started = time.time()
+
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+        async with session.get(url, timeout=timeout) as resp:
+            elapsed = time.time() - started
+
             if resp.status != 200:
-                return uid, None, None, None
+                print(f"[{uid}] HTTP {resp.status} ({elapsed:.2f}s)")
+                return uid, None, None, None, f"http_{resp.status}"
 
             text = await resp.text()
-            if not text:
-                return uid, None, None, None
 
-            # ─── محاولة JSON أولاً ───
+            # ─── محاولة JSON ───
             try:
                 data = json.loads(text)
                 if isinstance(data, dict):
                     if data.get("ok") and data.get("token"):
+                        print(f"[{uid}] ✅ OK ({elapsed:.2f}s) | "
+                              f"acc={data.get('account_id')} | "
+                              f"region={data.get('region')}")
                         return (
                             uid,
                             data["token"],
                             str(data.get("account_id", "")),
                             data.get("region", ""),
+                            None
                         )
-                    return uid, None, None, None
+                    return uid, None, None, None, data.get("error", "not_ok")
             except json.JSONDecodeError:
                 pass
 
             # ─── fallback: نص مباشر ───
             token = text.strip()
             if len(token) > 20:
-                return uid, token, None, None
-            return uid, None, None, None
+                print(f"[{uid}] ✅ OK raw ({elapsed:.2f}s)")
+                return uid, token, None, None, None
+
+            return uid, None, None, None, "empty_response"
 
     except asyncio.TimeoutError:
-        print(f"[timeout] uid {uid}")
-        return uid, None, None, None
+        print(f"[{uid}] ⏱ timeout after {TIMEOUT_PER_REQUEST}s")
+        return uid, None, None, None, "timeout"
+    except aiohttp.ClientError as e:
+        print(f"[{uid}] ❌ connection error: {e}")
+        return uid, None, None, None, f"conn_error"
     except Exception as e:
-        print(f"[error] uid {uid}: {e}")
-        return uid, None, None, None
+        print(f"[{uid}] ❌ {type(e).__name__}: {e}")
+        return uid, None, None, None, "exception"
 
 
-async def fetch_token_with_semaphore(semaphore, session, uid, password):
-    async with semaphore:
-        return await fetch_token(session, uid, password)
-
-
-async def fetch_tokens_for_group(group):
+# ============================================================
+#  جلب كل الحسابات — واحد واحد (sequential)
+# ============================================================
+async def fetch_all_sequential(accounts: dict):
+    """
+    يجلب كل الحسابات بالتتابع — واحد ثم التالي.
+    كل حساب له timeout خاص.
+    """
     tokens = {}
-    semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
+    failed = []
+    total = len(accounts)
+
     async with aiohttp.ClientSession() as session:
-        tasks = [
-            fetch_token_with_semaphore(semaphore, session, uid, password)
-            for uid, password in group.items()
-        ]
-        results = await asyncio.gather(*tasks)
-        for uid, token, acc_id, region in results:
+        for i, (uid, password) in enumerate(accounts.items(), 1):
+            print(f"\n[{i}/{total}] {uid}...")
+
+            uid_r, token, acc_id, region, error = await fetch_one_token(
+                session, uid, password
+            )
+
             if token:
-                tokens[uid] = token
-    return tokens
+                tokens[uid_r] = token
+            else:
+                failed.append((uid_r, error))
+
+            # تأخير اختياري بين الطلبات
+            if REQUEST_DELAY > 0 and i < total:
+                await asyncio.sleep(REQUEST_DELAY)
+
+    print(f"\n{'='*60}")
+    print(f"DONE: {len(tokens)}/{total} succeeded | {len(failed)} failed")
+    if failed:
+        print("Failed UIDs:")
+        for uid, err in failed:
+            print(f"  - {uid}: {err}")
+    print(f"{'='*60}\n")
+
+    return tokens, failed
 
 
+# ============================================================
+#  مساعدات
+# ============================================================
 def is_cache_valid():
     return (time.time() - CACHE["timestamp"]) < CACHE_DURATION and len(CACHE["tokens"]) > 0
 
@@ -468,75 +510,108 @@ def get_last_update_vn():
     return vn_time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-# ==================== ENDPOINTS ====================
+# ============================================================
+#  Endpoints
+# ============================================================
 @app.route("/api/get_jwt", methods=["GET"])
 def get_jwt_tokens():
-    global GROUP_INDEX, COLLECTED_TOKENS
+    """
+    يجلب كل التوكنات (واحد واحد).
+    Cache شغال لمدة CACHE_DURATION.
+    """
+    global IS_FETCHING, COLLECTED_TOKENS, GROUP_INDEX
 
+    # 1) كاش شغال → رجّع فوراً
     if is_cache_valid():
         return jsonify({
+            "ok": True,
+            "source": "cache",
             "count": len(CACHE["tokens"]),
             "last_update_vn": get_last_update_vn(),
             "tokens": CACHE["tokens"]
         })
 
-    async def process_groups():
-        global GROUP_INDEX
-        groups_to_fetch = []
+    # 2) طلب آخر شغال → لا تكرر
+    if IS_FETCHING:
+        return jsonify({
+            "ok": False,
+            "error": "fetch_in_progress",
+            "message": "Fetch already running. Wait and retry.",
+            "current_collected": len(COLLECTED_TOKENS)
+        }), 429
 
-        groups_to_fetch.append(group_accounts[GROUP_INDEX])
+    # 3) ابدأ الجلب
+    IS_FETCHING = True
+    try:
+        all_accounts = group_accounts[0]  # مجموعة واحدة
 
-        next_index = (GROUP_INDEX + 1) % len(group_accounts)
-        if next_index != GROUP_INDEX:
-            groups_to_fetch.append(group_accounts[next_index])
+        def run_fetch():
+            return asyncio.run(fetch_all_sequential(all_accounts))
 
-        all_tokens = {}
-        for group in groups_to_fetch:
-            tokens = await fetch_tokens_for_group(group)
-            all_tokens.update(tokens)
+        tokens, failed = run_fetch()
 
-        GROUP_INDEX = (GROUP_INDEX + 2) % len(group_accounts)
-
-        return all_tokens
-
-    new_tokens = asyncio.run(process_groups())
-    COLLECTED_TOKENS.update(new_tokens)
-
-    if GROUP_INDEX == 0:
-        CACHE["tokens"] = COLLECTED_TOKENS.copy()
+        # حفظ في الكاش
+        CACHE["tokens"] = tokens
         CACHE["timestamp"] = time.time()
         COLLECTED_TOKENS.clear()
 
-    return jsonify({
-        "count": len(COLLECTED_TOKENS) if not CACHE["tokens"] else len(CACHE["tokens"]),
-        "last_update_vn": get_last_update_vn() if CACHE["tokens"] else None,
-        "tokens": CACHE["tokens"] if CACHE["tokens"] else COLLECTED_TOKENS
-    })
+        return jsonify({
+            "ok": True,
+            "source": "fresh",
+            "count": len(tokens),
+            "failed_count": len(failed),
+            "failed": [{"uid": u, "error": e} for u, e in failed],
+            "last_update_vn": get_last_update_vn(),
+            "tokens": tokens
+        })
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": "server_error",
+            "detail": str(e)
+        }), 500
+    finally:
+        IS_FETCHING = False
 
 
-# ─── اختبار اتصال مباشر بـ API واحد ───
 @app.route("/api/test_one", methods=["GET"])
 def test_one():
     """
-    Usage: /api/test_one?uid=8003192873&password=BNGX_LVL~LQ63Q7
+    اختبار حساب واحد.
+    Usage: /api/test_one?uid=XXX&password=YYY
     """
     uid = request.args.get("uid", "").strip()
     password = request.args.get("password", "").strip()
+
     if not uid or not password:
         return jsonify({"ok": False, "error": "provide uid & password"}), 400
 
     async def run():
         async with aiohttp.ClientSession() as session:
-            return await fetch_token(session, uid, password)
+            return await fetch_one_token(session, uid, password)
 
-    u, token, acc_id, region = asyncio.run(run())
+    uid_r, token, acc_id, region, error = asyncio.run(run())
+
     return jsonify({
         "ok": bool(token),
-        "uid": u,
+        "uid": uid_r,
         "account_id": acc_id,
         "region": region,
+        "error": error,
         "token_preview": (token[:80] + "...") if token else None,
         "token_length": len(token) if token else 0,
+    })
+
+
+@app.route("/api/status", methods=["GET"])
+def status():
+    """حالة الجلب الحالية."""
+    return jsonify({
+        "is_fetching": IS_FETCHING,
+        "cache_valid": is_cache_valid(),
+        "cache_count": len(CACHE["tokens"]),
+        "collected_count": len(COLLECTED_TOKENS),
+        "cache_age_seconds": (time.time() - CACHE["timestamp"]) if CACHE["timestamp"] else None,
     })
 
 
@@ -548,25 +623,36 @@ def health():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "service": "JWT Group Fetcher",
+        "service": "JWT Sequential Fetcher",
         "upstream_api": JWT_API_TEMPLATE,
+        "config": {
+            "timeout_per_request": TIMEOUT_PER_REQUEST,
+            "cache_duration": CACHE_DURATION,
+            "mode": "sequential (one by one)"
+        },
         "endpoints": {
-            "GET /api/get_jwt": "Returns tokens batch by batch",
+            "GET /api/get_jwt": "Fetch all tokens (one by one)",
             "GET /api/test_one?uid=&password=": "Test one account",
+            "GET /api/status": "Fetch status",
             "GET /health": "Health check"
         }
     })
 
 
+# ============================================================
+#  التشغيل
+# ============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     print("=" * 60)
-    print("   JWT Group Fetcher")
+    print("   JWT Sequential Fetcher")
     print("=" * 60)
     print(f"[i] Listening    : http://0.0.0.0:{port}")
-    print(f"[i] Upstream API : {JWT_API_TEMPLATE}")
+    print(f"[i] Upstream     : {JWT_API_TEMPLATE}")
+    print(f"[i] Timeout/req  : {TIMEOUT_PER_REQUEST}s")
+    print(f"[i] Cache        : {CACHE_DURATION}s")
     print(f"[i] Endpoint     : http://localhost:{port}/api/get_jwt")
     print(f"[i] Test one     : http://localhost:{port}/api/test_one?uid=8003192873&password=BNGX_LVL~LQ63Q7")
-    print(f"[i] Health       : http://localhost:{port}/health")
+    print(f"[i] Status       : http://localhost:{port}/api/status")
     print("=" * 60)
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
