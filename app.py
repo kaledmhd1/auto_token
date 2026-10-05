@@ -1764,7 +1764,7 @@ JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={p
 TIMEOUT_PER_REQUEST = 20.0   # ← 20 ثانية لكل حساب
 REQUEST_DELAY = 0.0
 CACHE_DURATION = 10000
-BATCH_SIZE = 200             # ← كل دفعة 200 حساب
+BATCH_SIZE = 20             # ← كل دفعة 200 حساب
 MAX_CONCURRENT_BATCHES = 1   # ← عدد الدفعات المتزامنة (1 = دفعة واحدة كل مرة)
 
 
