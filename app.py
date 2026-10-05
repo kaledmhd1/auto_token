@@ -1763,8 +1763,8 @@ JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={p
 #  الإعدادات
 # ============================================================
 TIMEOUT_PER_REQUEST = 20.0
-ACCOUNTS_PER_CHUNK = 50          # ← 50 حساب لكل طلب
-MAX_CONCURRENT_IN_CHUNK = 50     # ← 50 نافذة متزامنة
+ACCOUNTS_PER_CHUNK = 20          # ← 50 حساب لكل طلب
+MAX_CONCURRENT_IN_CHUNK = 20     # ← 50 نافذة متزامنة
 AUTO_REFRESH_INTERVAL = 8 * 3600 # ← 8 ساعات
 
 
@@ -1957,64 +1957,21 @@ _refresh_thread.start()
 # ============================================================
 #  ✅ Endpoint الرئيسي — يرجع dict مباشر بكل التوكنات
 # ============================================================
-@app.route("/api/get_jwt", methods=["GET"])
-def get_jwt_tokens():
-    """
-    ✅ كل طلب:
-       1) يجلب 50 حساب جديد
-       2) يضيفهم للمخزون
-       3) يرجع dict مباشر فيه كل التوكنات المُجمّعة
-          (قديمة + جديدة) كأنها طلب واحد — بدون أي حقول إضافية
-    """
-    reset = request.args.get("reset", "0") == "1"
-
+@app.route("/api/get_all", methods=["GET"])
+def get_all_tokens():
+    """يرجع كل التوكنات المُجمّعة."""
     with STATE_LOCK:
-        all_accounts = group_accounts[0]
-        items = list(all_accounts.items())
-        total = len(items)
-
-        # إعادة تعيين إذا طُلب
-        if reset or STATE["total"] != total:
-            STATE["current_index"] = 0
-            STATE["total"] = total
-            STATE["tokens"] = {}
-
-        # طلب شغال؟ → ارجع التوكنات المتوفرة بدون جلب
-        if STATE["is_fetching"]:
-            return jsonify(STATE["tokens"]), 200
-
-        # انتهت كل الحسابات؟ → ارجع كل التوكنات
-        if STATE["current_index"] >= total:
-            return jsonify(STATE["tokens"]), 200
-
-        start = STATE["current_index"]
-        end = min(start + ACCOUNTS_PER_CHUNK, total)
-        chunk = dict(items[start:end])
-
-        STATE["is_fetching"] = True
-
-    # ─── الجلب ───
-    try:
-        new_tokens, failed = asyncio.run(fetch_chunk(chunk))
-
-        with STATE_LOCK:
-            STATE["tokens"].update(new_tokens)
-            STATE["current_index"] = end
-            STATE["last_chunk_time"] = time.time()
-            STATE["is_fetching"] = False
-
-            # 📸 نسخة نهائية
-            all_tokens = dict(STATE["tokens"])
-
-        # ✅ رد نظيف — فقط dict التوكنات
-        return jsonify(all_tokens)
-
-    except Exception as e:
-        with STATE_LOCK:
-            STATE["is_fetching"] = False
-            # أرجع ما تم جمعه حتى الآن
-            return jsonify(STATE["tokens"]), 200
-
+        current = STATE["current_index"]
+        total = STATE["total"]
+        return jsonify({
+            "ok": True,
+            "count": len(STATE["tokens"]),
+            "total_accounts": total,
+            "current_index": current,
+            "progress_pct": round(100 * current / total, 2) if total else 0,
+            "last_update_vn": get_last_update_vn(),
+            "tokens": STATE["tokens"]
+        })
 
 # ============================================================
 #  endpoints مساعدة
