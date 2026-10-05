@@ -1762,8 +1762,8 @@ JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={p
 #  الإعدادات
 # ============================================================
 TIMEOUT_PER_REQUEST = 20.0
-ACCOUNTS_PER_REQUEST = 20      # ← 20 حساب لكل طلب
-MAX_CONCURRENT_IN_REQUEST = 5  # ← 5 طلبات متزامنة داخل الطلب
+ACCOUNTS_PER_REQUEST = 50      # ← 20 حساب لكل طلب
+MAX_CONCURRENT_IN_REQUEST = 20  # ← 5 طلبات متزامنة داخل الطلب
 CACHE_DURATION = 10000
 
 # حالة الجلب (state)
@@ -1888,7 +1888,7 @@ def get_jwt_tokens():
     global FETCH_STATE
 
     max_concurrent = int(request.args.get("concurrent", MAX_CONCURRENT_IN_REQUEST))
-    max_concurrent = max(1, min(max_concurrent, 20))
+    max_concurrent = max(1, min(max_concurrent, 50))
 
     reset = request.args.get("reset", "0") == "1"
 
@@ -1960,7 +1960,7 @@ def get_jwt_tokens():
             "total_accounts": total,
             "progress_pct": round(100 * FETCH_STATE["current_index"] / total, 2),
             "next_index": FETCH_STATE["current_index"],
-            "failed_in_chunk": [{"uid": u, "error": e} for u, e in failed],
+            
             "new_tokens": tokens,
             "all_tokens_so_far": CACHE["tokens"] if done else None
         })
