@@ -5,12 +5,13 @@ import json
 import time
 from datetime import datetime, timezone, timedelta
 import os
+import threading
 
 app = Flask(__name__)
 
 
 # ============================================================
-#  الحسابات — الصق قائمتك هنا (كما هي)
+#  الحسابات — الصق قائمتك هنا
 # ============================================================
 group_accounts = [{
     "4556275788": "AllFF_VIP0MQCLBKP0",
@@ -1755,36 +1756,38 @@ group_accounts = [{
     "4089899430": "D45CADBFE0AEF8B9C3339603C772A355B2A66DCAB8C826E440691483CF1037E3"
 }]
 
-
 JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={password}"
 
 # ============================================================
 #  الإعدادات
 # ============================================================
-TIMEOUT_PER_REQUEST = 20.0   # ← 20 ثانية لكل حساب
-REQUEST_DELAY = 0.0
+TIMEOUT_PER_REQUEST = 20.0
+ACCOUNTS_PER_REQUEST = 20      # ← 20 حساب لكل طلب
+MAX_CONCURRENT_IN_REQUEST = 5  # ← 5 طلبات متزامنة داخل الطلب
 CACHE_DURATION = 10000
-BATCH_SIZE = 20             # ← كل دفعة 200 حساب
-MAX_CONCURRENT_BATCHES = 1   # ← عدد الدفعات المتزامنة (1 = دفعة واحدة كل مرة)
 
-
+# حالة الجلب (state)
 CACHE = {
     "tokens": {},
     "timestamp": 0
 }
 
-COLLECTED_TOKENS = {}
-IS_FETCHING = False
+# قفل لحماية الحالة من التزامن
+STATE_LOCK = threading.Lock()
+
+# تتبع الدفعات المُنجزة
+FETCH_STATE = {
+    "current_index": 0,       # آخر حساب وصلنا له
+    "total": 0,               # إجمالي الحسابات
+    "is_fetching": False,     # هل هناك جلب شغال الآن؟
+    "started_at": None,       # وقت البداية
+}
 
 
 # ============================================================
 #  جلب توكن حساب واحد — timeout 20s
 # ============================================================
 async def fetch_one_token(session, uid, password, semaphore):
-    """
-    جلب توكن واحد مع timeout 20 ثانية.
-    يستخدم semaphore للتحكم في التوازي.
-    """
     url = JWT_API_TEMPLATE.format(uid=uid, password=password)
     timeout = aiohttp.ClientTimeout(total=TIMEOUT_PER_REQUEST)
     started = time.time()
@@ -1800,14 +1803,11 @@ async def fetch_one_token(session, uid, password, semaphore):
 
                 text = await resp.text()
 
-                # ─── محاولة JSON ───
                 try:
                     data = json.loads(text)
                     if isinstance(data, dict):
                         if data.get("ok") and data.get("token"):
-                            print(f"[{uid}] ✅ OK ({elapsed:.2f}s) | "
-                                  f"acc={data.get('account_id')} | "
-                                  f"region={data.get('region')}")
+                            print(f"[{uid}] ✅ OK ({elapsed:.2f}s)")
                             return (
                                 uid,
                                 data["token"],
@@ -1819,7 +1819,6 @@ async def fetch_one_token(session, uid, password, semaphore):
                 except json.JSONDecodeError:
                     pass
 
-                # ─── fallback: نص مباشر ───
                 token = text.strip()
                 if len(token) > 20:
                     print(f"[{uid}] ✅ OK raw ({elapsed:.2f}s)")
@@ -1832,36 +1831,32 @@ async def fetch_one_token(session, uid, password, semaphore):
             return uid, None, None, None, "timeout"
         except aiohttp.ClientError as e:
             print(f"[{uid}] ❌ connection error: {e}")
-            return uid, None, None, None, f"conn_error"
+            return uid, None, None, None, "conn_error"
         except Exception as e:
             print(f"[{uid}] ❌ {type(e).__name__}: {e}")
             return uid, None, None, None, "exception"
 
 
 # ============================================================
-#  جلب دفعة واحدة (200 حساب) بالتوازي
+#  جلب 20 حساب فقط (كلهم بالتوازي مع حد أقصى)
 # ============================================================
-async def fetch_batch(batch_accounts: dict, batch_num: int, total_batches: int, max_concurrent: int = 50):
+async def fetch_chunk(chunk_accounts: dict, max_concurrent: int = 5):
     """
-    يجلب دفعة كاملة (200 حساب) بشكل متوازي.
-    كل حساب يعمل في "thread" (coroutine) منفصل.
+    يجلب 20 حساب بشكل متوازي (بحد أقصى max_concurrent).
     """
-    batch_size = len(batch_accounts)
     print(f"\n{'='*60}")
-    print(f"🚀 BATCH {batch_num}/{total_batches} — {batch_size} accounts")
+    print(f"🚀 Chunk of {len(chunk_accounts)} accounts (concurrent={max_concurrent})")
     print(f"{'='*60}")
 
-    # semaphore للتحكم في عدد الطلبات المتزامنة (لتجنب إغراق السيرفر)
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async with aiohttp.ClientSession() as session:
         tasks = [
             fetch_one_token(session, uid, password, semaphore)
-            for uid, password in batch_accounts.items()
+            for uid, password in chunk_accounts.items()
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # تجميع النتائج
     tokens = {}
     failed = []
     for result in results:
@@ -1874,60 +1869,8 @@ async def fetch_batch(batch_accounts: dict, batch_num: int, total_batches: int, 
         else:
             failed.append((uid, error))
 
-    print(f"\n📦 BATCH {batch_num} DONE: ✅ {len(tokens)} | ❌ {len(failed)}")
+    print(f"\n📦 Chunk DONE: ✅ {len(tokens)} | ❌ {len(failed)}")
     return tokens, failed
-
-
-# ============================================================
-#  جلب كل الحسابات — دفعات من 200
-# ============================================================
-async def fetch_all_in_batches(accounts: dict, max_concurrent: int = 50):
-    """
-    يقسم الحسابات إلى دفعات من BATCH_SIZE (200).
-    كل دفعة تُعالج بالتوازي، ثم تنتقل للدفعة التالية.
-    """
-    items = list(accounts.items())
-    total = len(items)
-    batches = [dict(items[i:i+BATCH_SIZE]) for i in range(0, total, BATCH_SIZE)]
-    total_batches = len(batches)
-
-    print(f"\n{'='*60}")
-    print(f"📊 Total accounts : {total}")
-    print(f"📊 Batch size     : {BATCH_SIZE}")
-    print(f"📊 Total batches  : {total_batches}")
-    print(f"📊 Timeout/req    : {TIMEOUT_PER_REQUEST}s")
-    print(f"📊 Concurrent/req : {max_concurrent}")
-    print(f"{'='*60}")
-
-    all_tokens = {}
-    all_failed = []
-
-    for i, batch in enumerate(batches, 1):
-        tokens, failed = await fetch_batch(
-            batch, batch_num=i, total_batches=total_batches,
-            max_concurrent=max_concurrent
-        )
-        all_tokens.update(tokens)
-        all_failed.extend(failed)
-
-    print(f"\n{'='*60}")
-    print(f"✅ ALL DONE: {len(all_tokens)}/{total} succeeded | {len(all_failed)} failed")
-    print(f"{'='*60}\n")
-
-    return all_tokens, all_failed
-
-
-# ============================================================
-#  مساعدات
-# ============================================================
-def is_cache_valid():
-    return (time.time() - CACHE["timestamp"]) < CACHE_DURATION and len(CACHE["tokens"]) > 0
-
-
-def get_last_update_vn():
-    utc_time = datetime.fromtimestamp(CACHE["timestamp"], tz=timezone.utc)
-    vn_time = utc_time + timedelta(hours=7)
-    return vn_time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ============================================================
@@ -1936,70 +1879,132 @@ def get_last_update_vn():
 @app.route("/api/get_jwt", methods=["GET"])
 def get_jwt_tokens():
     """
-    يجلب كل التوكنات في دفعات من 200، بالتوازي داخل كل دفعة.
+    ✅ كل طلب يجلب 20 حساب فقط.
+
+    Query params:
+        - concurrent : عدد الطلبات المتزامنة داخل الـ chunk (افتراضي 5)
+        - reset      : إذا =1 يعيد من البداية
     """
-    global IS_FETCHING
+    global FETCH_STATE
 
-    # optional query param للتحكم في التوازي
-    max_concurrent = int(request.args.get("concurrent", 50))
-    max_concurrent = max(1, min(max_concurrent, 200))
+    max_concurrent = int(request.args.get("concurrent", MAX_CONCURRENT_IN_REQUEST))
+    max_concurrent = max(1, min(max_concurrent, 20))
 
-    # 1) كاش شغال → رجّع فوراً
-    if is_cache_valid():
-        return jsonify({
-            "ok": True,
-            "source": "cache",
-            "count": len(CACHE["tokens"]),
-            "last_update_vn": get_last_update_vn(),
-            "tokens": CACHE["tokens"]
-        })
+    reset = request.args.get("reset", "0") == "1"
 
-    # 2) طلب آخر شغال → لا تكرر
-    if IS_FETCHING:
-        return jsonify({
-            "ok": False,
-            "error": "fetch_in_progress",
-            "message": "Fetch already running. Wait and retry.",
-        }), 429
-
-    # 3) ابدأ الجلب
-    IS_FETCHING = True
-    try:
+    with STATE_LOCK:
         all_accounts = group_accounts[0]
+        items = list(all_accounts.items())
+        total = len(items)
 
+        # إعادة تعيين إذا طُلب
+        if reset or FETCH_STATE["total"] != total:
+            FETCH_STATE["current_index"] = 0
+            FETCH_STATE["total"] = total
+            FETCH_STATE["started_at"] = time.time()
+            CACHE["tokens"] = {}
+
+        # هل انتهت كل الحسابات؟
+        if FETCH_STATE["current_index"] >= total:
+            return jsonify({
+                "ok": True,
+                "done": True,
+                "message": "All accounts fetched. Use ?reset=1 to start over.",
+                "total_fetched": len(CACHE["tokens"]),
+                "total_accounts": total,
+                "tokens": CACHE["tokens"]
+            })
+
+        # هل هناك طلب شغال الآن؟
+        if FETCH_STATE["is_fetching"]:
+            return jsonify({
+                "ok": False,
+                "error": "fetch_in_progress",
+                "message": "Another request is fetching. Wait a moment.",
+                "current_index": FETCH_STATE["current_index"],
+                "total": total
+            }), 429
+
+        # احسب الـ chunk الحالي (20 حساب)
+        start = FETCH_STATE["current_index"]
+        end = min(start + ACCOUNTS_PER_REQUEST, total)
+        chunk_items = items[start:end]
+        chunk = dict(chunk_items)
+
+        FETCH_STATE["is_fetching"] = True
+
+    # ─── نفّذ الجلب خارج القفل ───
+    try:
         tokens, failed = asyncio.run(
-            fetch_all_in_batches(all_accounts, max_concurrent=max_concurrent)
+            fetch_chunk(chunk, max_concurrent=max_concurrent)
         )
 
-        # حفظ في الكاش
-        CACHE["tokens"] = tokens
-        CACHE["timestamp"] = time.time()
+        with STATE_LOCK:
+            # حدّث الحالة
+            CACHE["tokens"].update(tokens)
+            CACHE["timestamp"] = time.time()
+            FETCH_STATE["current_index"] = end
+            FETCH_STATE["is_fetching"] = False
+
+            done = FETCH_STATE["current_index"] >= FETCH_STATE["total"]
 
         return jsonify({
             "ok": True,
-            "source": "fresh",
-            "count": len(tokens),
-            "failed_count": len(failed),
-            "batch_size": BATCH_SIZE,
-            "concurrent": max_concurrent,
-            "timeout_per_request": TIMEOUT_PER_REQUEST,
-            "failed": [{"uid": u, "error": e} for u, e in failed],
-            "last_update_vn": get_last_update_vn(),
-            "tokens": tokens
+            "done": done,
+            "chunk_start": start,
+            "chunk_end": end,
+            "chunk_size": len(chunk),
+            "chunk_succeeded": len(tokens),
+            "chunk_failed": len(failed),
+            "total_fetched": len(CACHE["tokens"]),
+            "total_accounts": total,
+            "progress_pct": round(100 * FETCH_STATE["current_index"] / total, 2),
+            "next_index": FETCH_STATE["current_index"],
+            "failed_in_chunk": [{"uid": u, "error": e} for u, e in failed],
+            "new_tokens": tokens,
+            "all_tokens_so_far": CACHE["tokens"] if done else None
         })
+
     except Exception as e:
+        with STATE_LOCK:
+            FETCH_STATE["is_fetching"] = False
         return jsonify({
             "ok": False,
             "error": "server_error",
             "detail": str(e)
         }), 500
-    finally:
-        IS_FETCHING = False
+
+
+@app.route("/api/get_all", methods=["GET"])
+def get_all_tokens():
+    """
+    يرجع كل التوكنات المُجمّعة حتى الآن.
+    """
+    return jsonify({
+        "ok": True,
+        "count": len(CACHE["tokens"]),
+        "total_accounts": FETCH_STATE["total"],
+        "current_index": FETCH_STATE["current_index"],
+        "progress_pct": round(100 * FETCH_STATE["current_index"] / FETCH_STATE["total"], 2)
+                       if FETCH_STATE["total"] else 0,
+        "tokens": CACHE["tokens"]
+    })
+
+
+@app.route("/api/reset", methods=["GET"])
+def reset_state():
+    """إعادة تعيين حالة الجلب."""
+    with STATE_LOCK:
+        FETCH_STATE["current_index"] = 0
+        FETCH_STATE["is_fetching"] = False
+        FETCH_STATE["started_at"] = time.time()
+        CACHE["tokens"] = {}
+        CACHE["timestamp"] = 0
+    return jsonify({"ok": True, "message": "State reset"})
 
 
 @app.route("/api/test_one", methods=["GET"])
 def test_one():
-    """اختبار حساب واحد."""
     uid = request.args.get("uid", "").strip()
     password = request.args.get("password", "").strip()
 
@@ -2019,24 +2024,23 @@ def test_one():
         "account_id": acc_id,
         "region": region,
         "error": error,
-        "token_preview": (token[:80] + "...") if token else None,
         "token_length": len(token) if token else 0,
     })
 
 
 @app.route("/api/status", methods=["GET"])
 def status():
-    """حالة الجلب الحالية."""
+    total = FETCH_STATE["total"]
+    current = FETCH_STATE["current_index"]
     return jsonify({
-        "is_fetching": IS_FETCHING,
-        "cache_valid": is_cache_valid(),
-        "cache_count": len(CACHE["tokens"]),
+        "is_fetching": FETCH_STATE["is_fetching"],
+        "current_index": current,
+        "total": total,
+        "progress_pct": round(100 * current / total, 2) if total else 0,
+        "tokens_collected": len(CACHE["tokens"]),
+        "accounts_per_request": ACCOUNTS_PER_REQUEST,
+        "max_concurrent": MAX_CONCURRENT_IN_REQUEST,
         "cache_age_seconds": (time.time() - CACHE["timestamp"]) if CACHE["timestamp"] else None,
-        "config": {
-            "batch_size": BATCH_SIZE,
-            "timeout_per_request": TIMEOUT_PER_REQUEST,
-            "cache_duration": CACHE_DURATION,
-        }
     })
 
 
@@ -2048,20 +2052,20 @@ def health():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "service": "JWT Batch Fetcher (200 per batch, parallel inside)",
+        "service": "JWT Chunked Fetcher (20 per request)",
         "upstream_api": JWT_API_TEMPLATE,
         "config": {
-            "batch_size": BATCH_SIZE,
+            "accounts_per_request": ACCOUNTS_PER_REQUEST,
+            "max_concurrent_in_request": MAX_CONCURRENT_IN_REQUEST,
             "timeout_per_request": TIMEOUT_PER_REQUEST,
-            "cache_duration": CACHE_DURATION,
-            "mode": "batches of 200, parallel inside each batch"
         },
-        "endpoints": {
-            "GET /api/get_jwt": "Fetch all tokens (batches of 200)",
-            "GET /api/get_jwt?concurrent=100": "Control concurrency (default 50)",
-            "GET /api/test_one?uid=&password=": "Test one account",
-            "GET /api/status": "Fetch status",
-            "GET /health": "Health check"
+        "usage": {
+            "1. Call /api/get_jwt repeatedly until 'done': true": "Each call fetches 20 accounts",
+            "2. /api/get_jwt?concurrent=10": "Control concurrency inside chunk",
+            "3. /api/get_jwt?reset=1": "Start over from index 0",
+            "4. /api/get_all": "Get all tokens collected so far",
+            "5. /api/status": "Check progress",
+            "6. /api/reset": "Reset everything"
         }
     })
 
@@ -2072,14 +2076,15 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     print("=" * 60)
-    print("   JWT Batch Fetcher (200/batch, parallel inside)")
+    print("   JWT Chunked Fetcher (20 accounts per request)")
     print("=" * 60)
-    print(f"[i] Listening    : http://0.0.0.0:{port}")
-    print(f"[i] Upstream     : {JWT_API_TEMPLATE}")
-    print(f"[i] Batch size   : {BATCH_SIZE}")
-    print(f"[i] Timeout/req  : {TIMEOUT_PER_REQUEST}s")
-    print(f"[i] Cache        : {CACHE_DURATION}s")
-    print(f"[i] Endpoint     : http://localhost:{port}/api/get_jwt")
-    print(f"[i] With conc.   : http://localhost:{port}/api/get_jwt?concurrent=100")
+    print(f"[i] Listening      : http://0.0.0.0:{port}")
+    print(f"[i] Accounts/req   : {ACCOUNTS_PER_REQUEST}")
+    print(f"[i] Concurrent/req : {MAX_CONCURRENT_IN_REQUEST}")
+    print(f"[i] Timeout/req    : {TIMEOUT_PER_REQUEST}s")
+    print(f"[i] Fetch endpoint : http://localhost:{port}/api/get_jwt")
+    print(f"[i] Get all        : http://localhost:{port}/api/get_all")
+    print(f"[i] Status         : http://localhost:{port}/api/status")
+    print(f"[i] Reset          : http://localhost:{port}/api/reset")
     print("=" * 60)
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
