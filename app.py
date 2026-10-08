@@ -241,8 +241,7 @@ group_accounts = [
   }
 ]
 
-  }
-]
+
 
 
 
