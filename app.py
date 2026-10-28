@@ -663,7 +663,7 @@ group_accounts = [
 
 
 
-JWT_API_TEMPLATE = "http://78.154.103.11:14214///login?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "http://de19.spaceify.eu:25840/login?uid={uid}&password={password}"
 
 # ============================================================
 #  ط§ظ„ط¥ط¹ط¯ط§ط¯ط§طھ
