@@ -663,7 +663,7 @@ group_accounts = [
 
 
 
-JWT_API_TEMPLATE = "http://us-az-phx.hostbu.com:5022/login?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "http://78.154.103.18:11844//login?uid={uid}&password={password}"
 
 # ============================================================
 #  ط§ظ„ط¥ط¹ط¯ط§ط¯ط§طھ
