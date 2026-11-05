@@ -5,14 +5,14 @@ import json
 import time
 from datetime import datetime, timezone, timedelta
 import os
+import threading
 
 app = Flask(__name__)
 
-
 # ============================================================
-#  ط§ظ„ط­ط³ط§ط¨ط§طھ â€” ط§ظ„طµظ‚ ظ‚ط§ط¦ظ…طھظƒ ظ‡ظ†ط§ (ظƒظ…ط§ ظ‡ظٹ)
+#  الحسابات (ضع قائمتك هنا)
 # ============================================================
-group_accounts = [
+group_accounts =  [
   {
     "8034798870": "BNGX_LVLUFNSIG",
     "8034798885": "BNGX_LVLZ9M1Z9",
@@ -663,107 +663,57 @@ group_accounts = [
 
 
 
+
+
 JWT_API_TEMPLATE = "http://de19.spaceify.eu:25840/login?uid={uid}&password={password}"
 
 # ============================================================
-#  ط§ظ„ط¥ط¹ط¯ط§ط¯ط§طھ
+#  الإعدادات
 # ============================================================
-TIMEOUT_PER_REQUEST = 20.0   # â†گ 20 ط«ط§ظ†ظٹط© ظ„ظƒظ„ ط­ط³ط§ط¨
-REQUEST_DELAY = 0.0
-CACHE_DURATION = 10000
+TIMEOUT_PER_REQUEST = 20.0
+CACHE_DURATION = 3600        # مدة الصلاحية (ساعة)
+MAX_CONCURRENT = 5           # 5 حسابات متزامنة
 
-# âœ… ظ„ط§ ط¯ظپط¹ط§طھ â€” ظپظ‚ط· 5 ط­ط³ط§ط¨ط§طھ ظ…طھط²ط§ظ…ظ†ط© ظپظٹ ظ†ظپط³ ط§ظ„ظ„ط­ط¸ط© (5 ط¨ظ€ 5)
-MAX_CONCURRENT = 5
-
-
+# الكاش الرئيسي (يُقرأ من قبل الطلبات)
 CACHE = {
     "tokens": {},
     "timestamp": 0
 }
 
-COLLECTED_TOKENS = {}
 IS_FETCHING = False
-
+_fetch_lock = threading.Lock()
 
 # ============================================================
-#  ط¬ظ„ط¨ طھظˆظƒظ† ط­ط³ط§ط¨ ظˆط§ط­ط¯ â€” timeout 20s
+#  جلب توكن حساب واحد
 # ============================================================
 async def fetch_one_token(session, uid, password, semaphore):
-    """
-    ط¬ظ„ط¨ طھظˆظƒظ† ظˆط§ط­ط¯ ظ…ط¹ timeout 20 ط«ط§ظ†ظٹط©.
-    ظٹط³طھط®ط¯ظ… semaphore ظ„ظ„طھط­ظƒظ… ظپظٹ ط§ظ„طھظˆط§ط²ظٹ.
-    """
     url = JWT_API_TEMPLATE.format(uid=uid, password=password)
     timeout = aiohttp.ClientTimeout(total=TIMEOUT_PER_REQUEST)
-    started = time.time()
-
+    
     async with semaphore:
         try:
             async with session.get(url, timeout=timeout) as resp:
-                elapsed = time.time() - started
-
                 if resp.status != 200:
-                    print(f"[{uid}] HTTP {resp.status} ({elapsed:.2f}s)")
-                    return uid, None, None, None, f"http_{resp.status}"
-
+                    return uid, None
                 text = await resp.text()
-
-                # â”€â”€â”€ ظ…ط­ط§ظˆظ„ط© JSON â”€â”€â”€
                 try:
                     data = json.loads(text)
-                    if isinstance(data, dict):
-                        if data.get("ok") and data.get("token"):
-                            print(f"[{uid}] âœ… OK ({elapsed:.2f}s) | "
-                                  f"acc={data.get('account_id')} | "
-                                  f"region={data.get('region')}")
-                            return (
-                                uid,
-                                data["token"],
-                                str(data.get("account_id", "")),
-                                data.get("region", ""),
-                                None
-                            )
-                        return uid, None, None, None, data.get("error", "not_ok")
+                    if isinstance(data, dict) and data.get("ok") and data.get("token"):
+                        return uid, data["token"]
                 except json.JSONDecodeError:
                     pass
-
-                # â”€â”€â”€ fallback: ظ†طµ ظ…ط¨ط§ط´ط± â”€â”€â”€
                 token = text.strip()
                 if len(token) > 20:
-                    print(f"[{uid}] âœ… OK raw ({elapsed:.2f}s)")
-                    return uid, token, None, None, None
-
-                return uid, None, None, None, "empty_response"
-
-        except asyncio.TimeoutError:
-            print(f"[{uid}] âڈ± timeout after {TIMEOUT_PER_REQUEST}s")
-            return uid, None, None, None, "timeout"
-        except aiohttp.ClientError as e:
-            print(f"[{uid}] â‌Œ connection error: {e}")
-            return uid, None, None, None, f"conn_error"
-        except Exception as e:
-            print(f"[{uid}] â‌Œ {type(e).__name__}: {e}")
-            return uid, None, None, None, "exception"
-
+                    return uid, token
+                return uid, None
+        except Exception:
+            return uid, None
 
 # ============================================================
-#  ط¬ظ„ط¨ ظƒظ„ ط§ظ„ط­ط³ط§ط¨ط§طھ â€” 5 ظپظٹ ظ†ظپط³ ط§ظ„ظˆظ‚طھ ظپظ‚ط· (ط¨ط¯ظˆظ† ط¯ظپط¹ط§طھ)
+#  جلب كل الحسابات
 # ============================================================
 async def fetch_all(accounts: dict, max_concurrent: int = 5):
-    """
-    ظٹط±ط³ظ„ ظƒظ„ ط§ظ„ط­ط³ط§ط¨ط§طھ ظ…ط±ط© ظˆط§ط­ط¯ط© ظ„ظ€ asyncioطŒ
-    ظ„ظƒظ† Semaphore(max_concurrent) ظٹط¶ظ…ظ† طھط´ط؛ظٹظ„ 5 ظپظ‚ط· ط¨ط§ظ„طھظˆط§ط²ظٹ.
-    ط§ظ„ط¨ط§ظ‚ظٹ ظٹظ†طھط¸ط±ظˆظ† ط¯ظˆط±ظ‡ظ… طھظ„ظ‚ط§ط¦ظٹط§ظ‹ (5 ط¨ظ€ 5) ط¨ط¯ظˆظ† ط¯ظپط¹ط§طھ.
-    """
-    total = len(accounts)
-    print(f"\n{'='*60}")
-    print(f"ًں“ٹ Total accounts   : {total}")
-    print(f"ًں“ٹ Concurrent limit : {max_concurrent} (5 by 5)")
-    print(f"ًں“ٹ Timeout/req      : {TIMEOUT_PER_REQUEST}s")
-    print(f"{'='*60}\n")
-
     semaphore = asyncio.Semaphore(max_concurrent)
-
     async with aiohttp.ClientSession() as session:
         tasks = [
             fetch_one_token(session, uid, password, semaphore)
@@ -771,38 +721,60 @@ async def fetch_all(accounts: dict, max_concurrent: int = 5):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # طھط¬ظ…ظٹط¹ ط§ظ„ظ†طھط§ط¦ط¬
     tokens = {}
-    failed = []
     for result in results:
-        if isinstance(result, Exception):
-            failed.append(("unknown", str(result)))
-            continue
-        uid, token, acc_id, region, error = result
-        if token:
-            tokens[uid] = token
-        else:
-            failed.append((uid, error))
-
-    print(f"\n{'='*60}")
-    print(f"âœ… ALL DONE: {len(tokens)}/{total} succeeded | {len(failed)} failed")
-    print(f"{'='*60}\n")
-
-    return tokens, failed
-
+        if isinstance(result, tuple) and len(result) == 2:
+            uid, token = result
+            if token:
+                tokens[uid] = token
+    return tokens
 
 # ============================================================
-#  ظ…ط³ط§ط¹ط¯ط§طھ
+#  الخيط الخلفي (تحديث صامت بدون تعطيل الطلبات)
 # ============================================================
-def is_cache_valid():
-    return (time.time() - CACHE["timestamp"]) < CACHE_DURATION and len(CACHE["tokens"]) > 0
+def background_fetcher():
+    global IS_FETCHING
+    print("⏰ Background fetcher started (silent updates every 1 hour)")
+    
+    while True:
+        try:
+            with _fetch_lock:
+                IS_FETCHING = True
+                
+            print(f"\n🔄 [{datetime.now().strftime('%H:%M:%S')}] Starting background fetch...")
+            all_accounts = group_accounts[0]
+            
+            # جلب التوكنات في "كاش مؤقت" (المستخدمون لا يتأثرون)
+            new_tokens = asyncio.run(
+                fetch_all(all_accounts, max_concurrent=MAX_CONCURRENT)
+            )
+            
+            if new_tokens:
+                # ✅ التبديل اللحظي (يأخذ أجزاء من الثانية)
+                CACHE["tokens"] = new_tokens
+                CACHE["timestamp"] = time.time()
+                print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Cache updated silently with {len(new_tokens)} tokens.")
+            else:
+                print("⚠️ Fetch returned 0 tokens. Keeping old cache.")
 
+        except Exception as e:
+            print(f"❌ [Background] Error: {e}")
+        finally:
+            with _fetch_lock:
+                IS_FETCHING = False
+            
+        # الانتظار ساعة كاملة
+        time.sleep(3600)
 
+# ============================================================
+#  مساعدات
+# ============================================================
 def get_last_update_vn():
+    if not CACHE["timestamp"]:
+        return "Never"
     utc_time = datetime.fromtimestamp(CACHE["timestamp"], tz=timezone.utc)
     vn_time = utc_time + timedelta(hours=7)
     return vn_time.strftime("%Y-%m-%d %H:%M:%S")
-
 
 # ============================================================
 #  Endpoints
@@ -810,16 +782,11 @@ def get_last_update_vn():
 @app.route("/api/get_jwt", methods=["GET"])
 def get_jwt_tokens():
     """
-    ظٹط¬ظ„ط¨ ظƒظ„ ط§ظ„طھظˆظƒظ†ط§طھ â€” 5 ط­ط³ط§ط¨ط§طھ ظپظ‚ط· ظپظٹ ظ†ظپط³ ط§ظ„ظ„ط­ط¸ط© (5 ط¨ظ€ 5).
+    يُرجع التوكنات الموجودة في الكاش فوراً.
+    إذا كان الكاش فارغاً (أول تشغيل)، ينتظر حتى ينتهي الجلب.
     """
-    global IS_FETCHING
-
-    # optional query param ظ„ظ„طھط­ظƒظ… ظپظٹ ط§ظ„طھظˆط§ط²ظٹ (ط§ظپطھط±ط§ط¶ظٹ 5)
-    max_concurrent = int(request.args.get("concurrent", MAX_CONCURRENT))
-    max_concurrent = max(1, min(max_concurrent, 50))
-
-    # 1) ظƒط§ط´ ط´ط؛ط§ظ„ â†’ ط±ط¬ظ‘ط¹ ظپظˆط±ط§ظ‹
-    if is_cache_valid():
+    # إذا كان الكاش يحتوي على توكنات، أرجعها فوراً للمستخدم
+    if len(CACHE["tokens"]) > 0:
         return jsonify({
             "ok": True,
             "source": "cache",
@@ -828,131 +795,52 @@ def get_jwt_tokens():
             "tokens": CACHE["tokens"]
         })
 
-    # 2) ط·ظ„ط¨ ط¢ط®ط± ط´ط؛ط§ظ„ â†’ ظ„ط§ طھظƒط±ط±
+    # إذا كان الكاش فارغاً، تحقق إذا كان الجلب جارياً
     if IS_FETCHING:
         return jsonify({
             "ok": False,
-            "error": "fetch_in_progress",
-            "message": "Fetch already running. Wait and retry.",
-        }), 429
+            "error": "initializing",
+            "message": "Server is fetching tokens for the first time. Please wait.",
+        }), 503
 
-    # 3) ط§ط¨ط¯ط£ ط§ظ„ط¬ظ„ط¨
-    IS_FETCHING = True
-    try:
-        all_accounts = group_accounts[0]
-
-        tokens, failed = asyncio.run(
-            fetch_all(all_accounts, max_concurrent=max_concurrent)
-        )
-
-        # ط­ظپط¸ ظپظٹ ط§ظ„ظƒط§ط´
-        CACHE["tokens"] = tokens
-        CACHE["timestamp"] = time.time()
-
-        return jsonify({
-            "ok": True,
-            "source": "fresh",
-            "count": len(tokens),
-            "failed_count": len(failed),
-            "concurrent": max_concurrent,
-            "timeout_per_request": TIMEOUT_PER_REQUEST,
-            "failed": [{"uid": u, "error": e} for u, e in failed],
-            "last_update_vn": get_last_update_vn(),
-            "tokens": tokens
-        })
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "error": "server_error",
-            "detail": str(e)
-        }), 500
-    finally:
-        IS_FETCHING = False
-
-
-@app.route("/api/test_one", methods=["GET"])
-def test_one():
-    """ط§ط®طھط¨ط§ط± ط­ط³ط§ط¨ ظˆط§ط­ط¯."""
-    uid = request.args.get("uid", "").strip()
-    password = request.args.get("password", "").strip()
-
-    if not uid or not password:
-        return jsonify({"ok": False, "error": "provide uid & password"}), 400
-
-    async def run():
-        sem = asyncio.Semaphore(1)
-        async with aiohttp.ClientSession() as session:
-            return await fetch_one_token(session, uid, password, sem)
-
-    uid_r, token, acc_id, region, error = asyncio.run(run())
-
+    # إذا الكاش فارغ ولا يوجد جلب (حالة نادرة جداً)، اجلب فوراً
     return jsonify({
-        "ok": bool(token),
-        "uid": uid_r,
-        "account_id": acc_id,
-        "region": region,
-        "error": error,
-        "token_preview": (token[:80] + "...") if token else None,
-        "token_length": len(token) if token else 0,
-    })
+        "ok": False,
+        "error": "no_cache",
+        "message": "No tokens available yet. Background fetcher will populate soon.",
+    }), 503
 
 
 @app.route("/api/status", methods=["GET"])
 def status():
-    """ط­ط§ظ„ط© ط§ظ„ط¬ظ„ط¨ ط§ظ„ط­ط§ظ„ظٹط©."""
     return jsonify({
-        "is_fetching": IS_FETCHING,
-        "cache_valid": is_cache_valid(),
+        "is_fetching_background": IS_FETCHING,
         "cache_count": len(CACHE["tokens"]),
         "cache_age_seconds": (time.time() - CACHE["timestamp"]) if CACHE["timestamp"] else None,
+        "last_update_vn": get_last_update_vn(),
         "config": {
-            "concurrent": MAX_CONCURRENT,
-            "timeout_per_request": TIMEOUT_PER_REQUEST,
-            "cache_duration": CACHE_DURATION,
+            "max_concurrent": MAX_CONCURRENT,
+            "auto_update_interval": "1 hour",
+            "mode": "Non-blocking (returns cached instantly)"
         }
     })
-
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"ok": True, "status": "alive"})
 
 
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({
-        "service": "JWT Fetcher (5 concurrent, no batches)",
-        "upstream_api": JWT_API_TEMPLATE,
-        "config": {
-            "concurrent": MAX_CONCURRENT,
-            "timeout_per_request": TIMEOUT_PER_REQUEST,
-            "cache_duration": CACHE_DURATION,
-            "mode": "5 accounts at a time, continuously (no batches)"
-        },
-        "endpoints": {
-            "GET /api/get_jwt": "Fetch all tokens (5 concurrent)",
-            "GET /api/get_jwt?concurrent=10": "Control concurrency (default 5)",
-            "GET /api/test_one?uid=&password=": "Test one account",
-            "GET /api/status": "Fetch status",
-            "GET /health": "Health check"
-        }
-    })
-
-
 # ============================================================
-#  ط§ظ„طھط´ط؛ظٹظ„
+#  التشغيل
 # ============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
+    
     print("=" * 60)
-    print("   JWT Fetcher â€” 5 accounts at a time (no batches)")
+    print("   JWT Fetcher — Non-blocking Auto-update")
     print("=" * 60)
-    print(f"[i] Listening      : http://0.0.0.0:{port}")
-    print(f"[i] Upstream       : {JWT_API_TEMPLATE}")
-    print(f"[i] Concurrency    : {MAX_CONCURRENT} (5 by 5)")
-    print(f"[i] Timeout/req    : {TIMEOUT_PER_REQUEST}s")
-    print(f"[i] Cache          : {CACHE_DURATION}s")
-    print(f"[i] Endpoint       : http://localhost:{port}/api/get_jwt")
-    print(f"[i] With conc.     : http://localhost:{port}/api/get_jwt?concurrent=10")
-    print("=" * 60)
+    
+    # ✅ تشغيل الخيط الخلفي
+    threading.Thread(target=background_fetcher, daemon=True).start()
+    
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
