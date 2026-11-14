@@ -665,7 +665,7 @@ group_accounts =  [
 
 
 
-JWT_API_TEMPLATE = "http://de19.spaceify.eu:25840/login?uid={uid}&password={password}"
+JWT_API_TEMPLATE = "http://82.148.254.210:2528/login?uid={uid}&password={password}"
 
 # ============================================================
 #  الإعدادات
