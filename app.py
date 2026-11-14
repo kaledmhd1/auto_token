@@ -672,7 +672,7 @@ JWT_API_TEMPLATE = "http://82.148.254.210:2528/login?uid={uid}&password={passwor
 # ============================================================
 TIMEOUT_PER_REQUEST = 20.0
 CACHE_DURATION = 3600        # مدة الصلاحية (ساعة)
-MAX_CONCURRENT = 200        # 5 حسابات متزامنة
+MAX_CONCURRENT = 5        # 5 حسابات متزامنة
 
 # الكاش الرئيسي (يُقرأ من قبل الطلبات)
 CACHE = {
